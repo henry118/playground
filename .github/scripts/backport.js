@@ -97,59 +97,9 @@ for (const targetBranch of branches) {
         }
       }
     }
-    // Push the backport branch (force to handle updates). This uploads the
-    // tree/blob objects to GitHub; the commits themselves are unsigned at
-    // this point and will be replaced below.
+    // Push the backport branch (force to handle updates)
     core.info(`Pushing ${backportBranch} to origin`);
     execSync(`git push --force-with-lease origin ${backportBranch}`, { stdio: 'inherit' });
-
-    // Branch protection requires verified commit signatures, but commits made
-    // via `git push` from a workflow are never signed. Re-create each new
-    // commit through the Git Data API instead: GitHub automatically signs
-    // commits created this way, so the resulting chain shows as "Verified"
-    // without needing to manage a GPG/SSH key for the bot.
-    //
-    // IMPORTANT: GitHub only auto-signs bot commits created via this endpoint
-    // when the request has NO custom author, committer, or signature info.
-    // Setting author/committer to the original PR author would silently
-    // disable signing, so these commits are attributed to github-actions[bot]
-    // instead; original authorship is preserved via the `-x` cherry-pick
-    // trailer already in the commit message, and in the PR body.
-    core.info(`Re-creating commits via the Git Data API to get verified signatures`);
-    const newCommitShas = execSync(`git log --format=%H ${targetBranch}..${backportBranch}`, { encoding: 'utf-8' })
-      .trim().split('\n').filter(Boolean).reverse(); // oldest -> newest
-
-    const { data: baseRef } = await github.rest.git.getRef({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      ref: `heads/${targetBranch}`
-    });
-    let parentSha = baseRef.object.sha;
-
-    for (const sha of newCommitShas) {
-      const treeSha = execSync(`git rev-parse ${sha}^{tree}`, { encoding: 'utf-8' }).trim();
-      const message = execSync(`git log -1 --format=%B ${sha}`, { encoding: 'utf-8' });
-
-      const { data: newCommit } = await github.rest.git.createCommit({
-        owner: context.repo.owner,
-        repo: context.repo.repo,
-        message,
-        tree: treeSha,
-        parents: [parentSha]
-        // author/committer intentionally omitted so GitHub attributes the
-        // commit to the authenticated bot identity and auto-signs it.
-      });
-      parentSha = newCommit.sha;
-    }
-
-    core.info(`Repointing ${backportBranch} at signed commit ${parentSha}`);
-    await github.rest.git.updateRef({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      ref: `heads/${backportBranch}`,
-      sha: parentSha,
-      force: true
-    });
 
     // Check if a PR already exists for this backport branch
     const { data: existingPRs } = await github.rest.pulls.list({
