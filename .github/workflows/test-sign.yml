@@ -1,0 +1,61 @@
+name: Test Bot Commit Signing
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Branch to base the test commit on'
+        required: true
+        default: 'release-1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  test-sign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create a commit via the Git Data API and check its verification status
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const targetBranch = context.payload.inputs.target_branch;
+            const testBranch = `test-sign-${Date.now()}`;
+
+            const { data: ref } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${targetBranch}`
+            });
+
+            const { data: baseCommit } = await github.rest.git.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: ref.object.sha
+            });
+
+            // Create the commit with NO custom author/committer/signature info,
+            // which is required for GitHub to auto-sign bot commits.
+            const { data: newCommit } = await github.rest.git.createCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              message: `test: verify auto-signing (${testBranch})`,
+              tree: baseCommit.tree.sha,
+              parents: [ref.object.sha]
+            });
+
+            core.info(`New commit: ${newCommit.sha}`);
+            core.info(`Verification: ${JSON.stringify(newCommit.verification, null, 2)}`);
+
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/heads/${testBranch}`,
+              sha: newCommit.sha
+            });
+
+            core.info(`Pushed to branch: ${testBranch}`);
+
+            if (!newCommit.verification.verified) {
+              core.setFailed(`Commit was not verified: ${newCommit.verification.reason}`);
+            }
